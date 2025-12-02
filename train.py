@@ -56,8 +56,32 @@ class EfficientNetWithMSA(nn.Module):
     def __init__(self, num_classes=8, use_msa=False, pretrained=True):
         super(EfficientNetWithMSA, self).__init__()
 
-        # Load EfficientNet B7
-        self.backbone = timm.create_model('efficientnet_b7', pretrained=pretrained)
+        # Load EfficientNet B7 with pretrained weights
+        if pretrained:
+            # Try different model variants with pretrained weights
+            model_variants = [
+                'tf_efficientnet_b7.ns_jft_in1k',  # ImageNet-21k pretrained
+                'efficientnet_b7.ra_in1k',          # ImageNet-1k with RandAugment
+                'tf_efficientnet_b7.aa_in1k',       # ImageNet-1k with AutoAugment
+            ]
+
+            backbone_loaded = False
+            for variant in model_variants:
+                try:
+                    print(f"Attempting to load {variant}...")
+                    self.backbone = timm.create_model(variant, pretrained=True)
+                    print(f"Successfully loaded {variant}")
+                    backbone_loaded = True
+                    break
+                except Exception as e:
+                    print(f"Failed to load {variant}: {e}")
+                    continue
+
+            if not backbone_loaded:
+                print("Warning: Could not load pretrained weights. Using random initialization.")
+                self.backbone = timm.create_model('efficientnet_b7', pretrained=False)
+        else:
+            self.backbone = timm.create_model('efficientnet_b7', pretrained=False)
 
         # Get the number of features before the classifier
         in_features = self.backbone.classifier.in_features
