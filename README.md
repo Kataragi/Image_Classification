@@ -31,26 +31,20 @@
 - CUDA 12.8
 - Python 3.10+
 
-# CUDAバージョン確認
-```
-nvcc --version
-```
-
 ### パッケージのインストール
 ```
 # 仮想環境の作成
 python3.10 -m venv venv
 source venv/bin/activate
 
-# PyTorch (CUDA 12.1サポート) のインストール
-# Note: CUDA 12.8はCUDA 12.1のバイナリと互換性があります
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# CUDA 12.8用のPyTorch 2.8.0（最新安定版）
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # その他の依存パッケージのインストール
 pip install -r requirements.txt
 
-# CUDAが正しく認識されているか確認
-python -c "import torch; print(f'CUDA Available: {torch.cuda.is_available()}'); print(f'CUDA Version: {torch.version.cuda}')"
+# python・CUDA・torchバージョンを確認
+python -c "import sys; import torch; print(f'Python: {sys.version.split()[0]} | PyTorch: {torch.__version__} | CUDA: {torch.version.cuda} | Available: {torch.cuda.is_available()}')"
 ```
 
 ## データセットの準備
@@ -133,7 +127,7 @@ python train.py \
   --output_dir outputs \
   --batch_size 8 \
   --epochs 50 \
-  --lr 1e-4 \
+  --lr 1e-5 \
   --num_workers 4
 ```
 
