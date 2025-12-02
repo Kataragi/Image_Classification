@@ -102,7 +102,7 @@ dataset/
 └── pixelart/
 ```
 
-学習スクリプトが自動的に80%をtrain、20%をvalidationに**仮想分割**します（比率は`--val_split`オプションで変更可能）。
+学習スクリプトが自動的に85%をtrain、15%をvalidationに**仮想分割**します（比率は`--val_split`オプションで変更可能）。
 
 **メリット:**
 - **物理的なフォルダー構造を変更しない**（train/valディレクトリを作成しない）
@@ -212,7 +212,7 @@ python train.py \
 | `--num_workers` | データローダーのワーカー数 | `4` |
 | `--use_msa` | MSA-Netを使用 | `False` |
 | `--resume` | チェックポイントから再開 | `None` |
-| `--val_split` | Validationの分割比率（自動分割時） | `0.2` |
+| `--val_split` | Validationの分割比率（自動分割時） | `0.15` |
 | `--random_seed` | データ分割のランダムシード | `42` |
 
 ### TensorBoardで学習過程を確認
@@ -393,6 +393,33 @@ Image_Classification/
 
 ## トラブルシューティング
 
+### CUDAエラー: "no kernel image is available for execution"
+
+このエラーは、PyTorchのCUDAバージョンとGPUの互換性の問題です:
+
+```bash
+# 1. GPU情報を確認
+nvidia-smi
+
+# 2. PyTorchのCUDAバージョンを確認
+python -c "import torch; print(f'PyTorch CUDA: {torch.version.cuda}')"
+
+# 3. GPUのCompute Capabilityを確認
+python -c "import torch; print(f'GPU Capability: {torch.cuda.get_device_capability(0)}')"
+
+# 4. PyTorchを再インストール（CUDA 12.1用）
+pip uninstall torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# 5. または、CUDA 11.8用
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+```
+
+**原因:**
+- GPUのCompute Capabilityが古すぎる（7.0未満）
+- PyTorchのCUDAバージョンがGPUに対応していない
+- NVIDIA DriverとCUDAのバージョン不一致
+
 ### CUDAが認識されない
 
 ```bash
@@ -403,14 +430,27 @@ nvidia-smi
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
+### GPU共有メモリエラー
+
+学習スクリプトは自動的にGPU専用メモリを使用するように設定されています。
+それでも問題が発生する場合:
+
+```bash
+# ワーカー数を減らす
+python train.py --num_workers 2
+
+# または、ワーカーを無効化（遅くなります）
+python train.py --num_workers 0
+```
+
 ### メモリ不足エラー
 
 ```bash
 # バッチサイズを小さくする
 python train.py --batch_size 4
 
-# またはグラデーション蓄積を使用
-# (train.pyの修正が必要)
+# またはワーカー数を減らす
+python train.py --batch_size 4 --num_workers 2
 ```
 
 ### 学習が進まない

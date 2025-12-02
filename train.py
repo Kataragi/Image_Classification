@@ -189,7 +189,7 @@ def calculate_class_weights(dataset_path, class_names):
     return weights, class_counts
 
 
-def get_data_loaders(data_dir, batch_size, val_split=0.2, random_seed=42, num_workers=4):
+def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_workers=4):
     """
     Create data loaders with virtual train/val split.
 
@@ -320,12 +320,16 @@ def get_data_loaders(data_dir, batch_size, val_split=0.2, random_seed=42, num_wo
     )
 
     # Create data loaders
+    # Use persistent_workers to avoid shared memory issues
+    # multiprocessing_context='spawn' uses GPU dedicated memory instead of shared memory
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         sampler=sampler,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True if num_workers > 0 else False,
+        multiprocessing_context='spawn' if num_workers > 0 else None
     )
 
     val_loader = DataLoader(
@@ -333,7 +337,9 @@ def get_data_loaders(data_dir, batch_size, val_split=0.2, random_seed=42, num_wo
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True if num_workers > 0 else False,
+        multiprocessing_context='spawn' if num_workers > 0 else None
     )
 
     # Convert weights to tensor for loss function
@@ -432,8 +438,8 @@ def main():
                        help='Use MSA-Net blocks (default: False)')
     parser.add_argument('--resume', type=str, default=None,
                        help='Path to checkpoint to resume from')
-    parser.add_argument('--val_split', type=float, default=0.2,
-                       help='Validation split ratio if dataset is not already split (default: 0.2)')
+    parser.add_argument('--val_split', type=float, default=0.15,
+                       help='Validation split ratio if dataset is not already split (default: 0.15)')
     parser.add_argument('--random_seed', type=int, default=42,
                        help='Random seed for dataset split (default: 42)')
 
@@ -447,8 +453,39 @@ def main():
     print(f"Using device: {device}")
 
     if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"CUDA Version: {torch.version.cuda}")
+        print(f"\nGPU Information:")
+        print(f"  GPU Name: {torch.cuda.get_device_name(0)}")
+        print(f"  CUDA Available: {torch.cuda.is_available()}")
+        print(f"  PyTorch CUDA Version: {torch.version.cuda}")
+        print(f"  Number of GPUs: {torch.cuda.device_count()}")
+
+        # Get GPU compute capability
+        capability = torch.cuda.get_device_capability(0)
+        print(f"  GPU Compute Capability: {capability[0]}.{capability[1]}")
+
+        # Check CUDA compatibility
+        try:
+            # Test CUDA operation
+            test_tensor = torch.zeros(1).cuda()
+            print(f"  CUDA Test: Passed")
+            del test_tensor
+            torch.cuda.empty_cache()
+        except RuntimeError as e:
+            print(f"\n{'='*80}")
+            print("ERROR: CUDA compatibility issue detected!")
+            print(f"{'='*80}")
+            print(f"Error: {e}")
+            print("\nPossible solutions:")
+            print("1. Your GPU may not be supported by this PyTorch build")
+            print("2. Reinstall PyTorch with the correct CUDA version:")
+            print("   pip uninstall torch torchvision")
+            print("   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121")
+            print(f"3. Your GPU Compute Capability ({capability[0]}.{capability[1]}) may not be supported")
+            print("4. Try updating your NVIDIA drivers")
+            print(f"{'='*80}\n")
+            raise
+    else:
+        print("\nWarning: CUDA not available. Training will be very slow on CPU.")
 
     # Load data (with virtual split if necessary)
     print("\nLoading dataset...")
