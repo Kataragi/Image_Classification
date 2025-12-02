@@ -32,11 +32,12 @@
 - Python 3.10+
 
 # CUDAバージョン確認
+```
 nvcc --version
 ```
 
 ### パッケージのインストール
-
+```
 # 仮想環境の作成
 python3.10 -m venv venv
 source venv/bin/activate
