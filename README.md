@@ -25,46 +25,17 @@
 
 ## 環境構築
 
-### 前提条件
+### 作者環境(参考)
 
 - Windows 11 with WSL2
 - CUDA 12.8
 - Python 3.10+
 
-### WSL2のセットアップ
-
-```bash
-# WSL2のインストール (PowerShellで管理者権限)
-wsl --install
-
-# Ubuntuを起動
-wsl
-```
-
-### CUDA 12.8のインストール
-
-```bash
-# CUDA Toolkitのインストール
-wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt-get update
-sudo apt-get -y install cuda-toolkit-12-8
-
-# 環境変数の設定
-echo 'export PATH=/usr/local/cuda-12.8/bin${PATH:+:${PATH}}' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}' >> ~/.bashrc
-source ~/.bashrc
-
 # CUDAバージョン確認
 nvcc --version
 ```
 
-### Pythonとパッケージのインストール
-
-```bash
-# Pythonのインストール
-sudo apt update
-sudo apt install -y python3.10 python3.10-venv python3-pip
+### パッケージのインストール
 
 # 仮想環境の作成
 python3.10 -m venv venv
