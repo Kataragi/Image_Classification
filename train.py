@@ -7,6 +7,7 @@ Supports 8 art styles with EfficientNet B7 and optional MSA-Net
 import os
 import argparse
 import json
+import shutil
 from pathlib import Path
 from collections import Counter
 
@@ -19,6 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import timm
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 
 class MSABlock(nn.Module):
@@ -98,6 +100,113 @@ class EfficientNetWithMSA(nn.Module):
             return logits, coords
 
         return logits
+
+
+def prepare_dataset(data_dir, val_split=0.2, random_seed=42):
+    """
+    Prepare dataset by splitting into train/val if needed.
+
+    Supports two directory structures:
+    1. Already split: data_dir/train/ and data_dir/val/
+    2. Not split: data_dir/ with class folders directly
+
+    Args:
+        data_dir: Path to dataset directory
+        val_split: Validation split ratio (default: 0.2)
+        random_seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (train_dir, val_dir, is_temp) where is_temp indicates if dirs are temporary
+    """
+    data_path = Path(data_dir)
+    train_dir = data_path / 'train'
+    val_dir = data_path / 'val'
+
+    # Check if already split
+    if train_dir.exists() and val_dir.exists():
+        print(f"Dataset already split into train/val")
+        return str(train_dir.parent), False
+
+    print(f"Dataset not split. Automatically splitting with {val_split:.0%} for validation...")
+
+    # Expected class names
+    expected_classes = ['anime', 'brush', 'thick', 'watercolor', 'photo', '3dcg', 'comic', 'pixelart']
+
+    # Find class directories
+    class_dirs = []
+    for class_name in expected_classes:
+        class_path = data_path / class_name
+        if class_path.exists() and class_path.is_dir():
+            class_dirs.append(class_name)
+
+    if not class_dirs:
+        raise ValueError(
+            f"No class directories found in {data_dir}. "
+            f"Expected: {', '.join(expected_classes)}"
+        )
+
+    print(f"Found {len(class_dirs)} classes: {', '.join(class_dirs)}")
+
+    # Create temp split directories
+    temp_train_dir = data_path / 'train'
+    temp_val_dir = data_path / 'val'
+
+    # Remove existing temp dirs if they exist
+    if temp_train_dir.exists():
+        shutil.rmtree(temp_train_dir)
+    if temp_val_dir.exists():
+        shutil.rmtree(temp_val_dir)
+
+    temp_train_dir.mkdir()
+    temp_val_dir.mkdir()
+
+    # Split each class
+    total_train = 0
+    total_val = 0
+
+    for class_name in class_dirs:
+        class_path = data_path / class_name
+
+        # Get all image files
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+        image_files = [f for f in class_path.iterdir()
+                      if f.suffix.lower() in image_extensions]
+
+        if not image_files:
+            print(f"Warning: No images found in {class_name}/")
+            continue
+
+        # Stratified split
+        train_files, val_files = train_test_split(
+            image_files,
+            test_size=val_split,
+            random_state=random_seed
+        )
+
+        # Create class directories
+        train_class_dir = temp_train_dir / class_name
+        val_class_dir = temp_val_dir / class_name
+        train_class_dir.mkdir()
+        val_class_dir.mkdir()
+
+        # Create symbolic links
+        for img_file in train_files:
+            link_path = train_class_dir / img_file.name
+            link_path.symlink_to(img_file.absolute())
+
+        for img_file in val_files:
+            link_path = val_class_dir / img_file.name
+            link_path.symlink_to(img_file.absolute())
+
+        total_train += len(train_files)
+        total_val += len(val_files)
+
+        print(f"  {class_name:15s}: {len(train_files):4d} train, {len(val_files):4d} val")
+
+    print(f"\nTotal: {total_train} train, {total_val} val images")
+    print(f"Split ratio: {total_train/(total_train+total_val):.1%} / {total_val/(total_train+total_val):.1%}\n")
+
+    return str(data_path), True
 
 
 def calculate_class_weights(dataset_path, class_names):
@@ -297,6 +406,10 @@ def main():
                        help='Use MSA-Net blocks (default: False)')
     parser.add_argument('--resume', type=str, default=None,
                        help='Path to checkpoint to resume from')
+    parser.add_argument('--val_split', type=float, default=0.2,
+                       help='Validation split ratio if dataset is not already split (default: 0.2)')
+    parser.add_argument('--random_seed', type=int, default=42,
+                       help='Random seed for dataset split (default: 42)')
 
     args = parser.parse_args()
 
@@ -311,10 +424,18 @@ def main():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"CUDA Version: {torch.version.cuda}")
 
+    # Prepare dataset (split if necessary)
+    print("\nPreparing dataset...")
+    data_dir, is_temp_split = prepare_dataset(
+        args.data_dir,
+        val_split=args.val_split,
+        random_seed=args.random_seed
+    )
+
     # Load data
     print("\nLoading dataset...")
     train_loader, val_loader, class_weights, class_names = get_data_loaders(
-        args.data_dir,
+        data_dir,
         args.batch_size,
         args.num_workers
     )

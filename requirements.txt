@@ -13,6 +13,7 @@ Pillow==11.0.0
 
 # Scientific Computing
 numpy==2.0.2
+scikit-learn==1.5.2
 
 # Note: For CUDA 12.8 support, install PyTorch with:
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121

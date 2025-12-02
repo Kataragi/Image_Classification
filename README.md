@@ -82,7 +82,35 @@ python -c "import torch; print(f'CUDA Available: {torch.cuda.is_available()}'); 
 
 ## データセットの準備
 
-データセットを以下のディレクトリ構造で配置します:
+### 方法1: 自動分割（推奨）
+
+データセットをクラスごとに配置するだけで、自動的にtrain/valに分割されます:
+
+```
+dataset/
+├── anime/
+│   ├── image1.jpg
+│   ├── image2.jpg
+│   └── ...
+├── brush/
+├── thick/
+├── watercolor/
+├── photo/
+├── 3dcg/
+├── comic/
+└── pixelart/
+```
+
+学習スクリプトが自動的に80%をtrain、20%をvalidationに分割します（比率は`--val_split`オプションで変更可能）。
+
+**メリット:**
+- 手動でtrain/valを分ける必要がない
+- 層化分割により各クラスの比率を保持
+- 再現性のある分割（`--random_seed`で固定）
+
+### 方法2: 手動分割
+
+既にtrain/valに分割済みの場合も使用できます:
 
 ```
 dataset/
@@ -109,6 +137,8 @@ dataset/
     └── pixelart/
 ```
 
+学習スクリプトが自動的にtrain/valディレクトリを検出し、既存の分割を使用します。
+
 ### サポートする画像形式
 
 - JPEG (.jpg, .jpeg)
@@ -122,6 +152,7 @@ dataset/
 
 ```bash
 # 標準的なトレーニング (MSA-Netなし)
+# データセットが自動的にtrain/valに分割されます
 python train.py \
   --data_dir dataset \
   --output_dir outputs \
@@ -129,6 +160,18 @@ python train.py \
   --epochs 50 \
   --lr 1e-4 \
   --num_workers 4
+```
+
+### カスタム分割比率での学習
+
+```bash
+# Validationの比率を30%に設定
+python train.py \
+  --data_dir dataset \
+  --output_dir outputs \
+  --batch_size 8 \
+  --epochs 50 \
+  --val_split 0.3
 ```
 
 ### MSA-Netを使用した学習
@@ -166,6 +209,8 @@ python train.py \
 | `--num_workers` | データローダーのワーカー数 | `4` |
 | `--use_msa` | MSA-Netを使用 | `False` |
 | `--resume` | チェックポイントから再開 | `None` |
+| `--val_split` | Validationの分割比率（自動分割時） | `0.2` |
+| `--random_seed` | データ分割のランダムシード | `42` |
 
 ### TensorBoardで学習過程を確認
 
