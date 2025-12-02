@@ -320,16 +320,16 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
     )
 
     # Create data loaders
-    # Use persistent_workers to avoid shared memory issues
-    # multiprocessing_context='spawn' uses GPU dedicated memory instead of shared memory
+    # Disable persistent_workers to avoid semaphore leak
+    # Use 'forkserver' context for better GPU compatibility
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         sampler=sampler,
         num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=True if num_workers > 0 else False,
-        multiprocessing_context='spawn' if num_workers > 0 else None
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=False,
+        prefetch_factor=2 if num_workers > 0 else None
     )
 
     val_loader = DataLoader(
@@ -337,9 +337,9 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=True if num_workers > 0 else False,
-        multiprocessing_context='spawn' if num_workers > 0 else None
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=False,
+        prefetch_factor=2 if num_workers > 0 else None
     )
 
     # Convert weights to tensor for loss function
@@ -357,7 +357,17 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
     total = 0
 
     for batch_idx, (inputs, targets) in enumerate(train_loader):
-        inputs, targets = inputs.to(device), targets.to(device)
+        # Transfer data to GPU (critical for GPU training)
+        inputs = inputs.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+
+        # Verify GPU usage on first batch
+        if batch_idx == 0 and epoch == 0:
+            print(f"\n[GPU Check] Input device: {inputs.device}")
+            print(f"[GPU Check] Target device: {targets.device}")
+            print(f"[GPU Check] Model device: {next(model.parameters()).device}")
+            if torch.cuda.is_available():
+                print(f"[GPU Check] GPU Memory Allocated: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
 
         # Forward pass
         optimizer.zero_grad()
@@ -400,7 +410,9 @@ def validate(model, val_loader, criterion, device, epoch, writer):
 
     with torch.no_grad():
         for inputs, targets in val_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
+            # Transfer data to GPU (critical for GPU validation)
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
 
             outputs = model(inputs)
             loss = criterion(outputs, targets)
@@ -503,10 +515,21 @@ def main():
         num_classes=len(class_names),
         use_msa=args.use_msa,
         pretrained=True
-    ).to(device)
+    )
 
-    # Loss function with class weights
-    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    # CRITICAL: Move model to GPU
+    model = model.to(device)
+
+    # Verify model is on GPU
+    print(f"\n[GPU Status] Model device: {next(model.parameters()).device}")
+    if torch.cuda.is_available():
+        print(f"[GPU Status] Model is on GPU: {next(model.parameters()).is_cuda}")
+        print(f"[GPU Status] Initial GPU Memory: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
+
+    # Loss function with class weights (move weights to GPU)
+    class_weights_gpu = class_weights.to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights_gpu)
+    print(f"[GPU Status] Loss criterion weight device: {criterion.weight.device}")
 
     # Optimizer
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
