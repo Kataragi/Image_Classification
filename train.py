@@ -349,12 +349,16 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
     return train_loader, val_loader, class_weights, class_names
 
 
-def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer, pbar):
+def train_epoch(model, train_loader, criterion, optimizer, device, epoch, total_epochs, writer, pbar):
     """Train for one epoch"""
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
+
+    # Reset progress bar for new epoch
+    pbar.reset(total=len(train_loader))
+    pbar.set_description(f'Epoch {epoch+1}/{total_epochs}')
 
     for batch_idx, (inputs, targets) in enumerate(train_loader):
         # Transfer data to GPU (critical for GPU training)
@@ -367,7 +371,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
             print(f"[GPU Check] Target device: {targets.device}")
             print(f"[GPU Check] Model device: {next(model.parameters()).device}")
             if torch.cuda.is_available():
-                print(f"[GPU Check] GPU Memory Allocated: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
+                print(f"[GPU Check] GPU Memory Allocated: {torch.cuda.memory_allocated()/1024**3:.2f} GB\n")
 
         # Forward pass
         optimizer.zero_grad()
@@ -384,10 +388,10 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
 
-        # Update progress bar (without creating new line)
+        # Update progress bar
         pbar.set_postfix({
-            'loss': running_loss / (batch_idx + 1),
-            'acc': 100. * correct / total
+            'loss': f'{running_loss / (batch_idx + 1):.4f}',
+            'acc': f'{100. * correct / total:.2f}%'
         })
         pbar.update(1)
 
@@ -454,6 +458,8 @@ def main():
                        help='Validation split ratio if dataset is not already split (default: 0.15)')
     parser.add_argument('--random_seed', type=int, default=42,
                        help='Random seed for dataset split (default: 42)')
+    parser.add_argument('--save_freq', type=int, default=1,
+                       help='Save checkpoint every N epochs (default: 1, best model is always saved)')
 
     args = parser.parse_args()
 
@@ -564,59 +570,71 @@ def main():
 
     # Training loop
     print(f"\nStarting training for {args.epochs} epochs...")
+    print(f"Checkpoints will be saved every {args.save_freq} epoch(s)")
     print("=" * 80)
 
-    for epoch in range(start_epoch, args.epochs):
-        print(f"\nEpoch {epoch+1}/{args.epochs}")
-        print("-" * 80)
+    # Create single progress bar for all epochs
+    total_batches = len(train_loader)
+    pbar = tqdm(
+        total=total_batches,
+        desc=f'Epoch 1/{args.epochs}',
+        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}',
+        leave=True,
+        position=0
+    )
 
-        # Create progress bar for this epoch
-        total_batches = len(train_loader)
-        pbar = tqdm(total=total_batches, desc='Training',
-                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}',
-                   leave=True)
+    try:
+        for epoch in range(start_epoch, args.epochs):
+            # Train
+            train_loss, train_acc = train_epoch(
+                model, train_loader, criterion, optimizer, device, epoch, args.epochs, writer, pbar
+            )
 
-        # Train
-        train_loss, train_acc = train_epoch(
-            model, train_loader, criterion, optimizer, device, epoch, writer, pbar
-        )
+            # Validate
+            pbar.write(f"\nEpoch {epoch+1}/{args.epochs} - Validating...")
+            val_loss, val_acc = validate(model, val_loader, criterion, device, epoch, writer)
+
+            # Update learning rate
+            scheduler.step()
+            current_lr = optimizer.param_groups[0]['lr']
+            writer.add_scalar('Learning_Rate', current_lr, epoch)
+
+            # Prepare checkpoint data
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': val_loss,
+                'val_acc': val_acc,
+                'best_val_acc': best_val_acc,
+                'class_names': class_names,
+                'use_msa': args.use_msa
+            }
+
+            # Save latest checkpoint based on save_freq
+            if (epoch + 1) % args.save_freq == 0 or (epoch + 1) == args.epochs:
+                torch.save(checkpoint, os.path.join(args.output_dir, 'latest_checkpoint.pth'))
+                pbar.write(f"Checkpoint saved at epoch {epoch+1}")
+
+            # Always save best checkpoint when validation accuracy improves
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                checkpoint['best_val_acc'] = best_val_acc
+                torch.save(checkpoint, os.path.join(args.output_dir, 'best_model.pth'))
+                pbar.write(f"★ New best model saved! Val Acc: {val_acc:.2f}%")
+
+            # Print epoch summary
+            pbar.write(
+                f"Epoch {epoch+1}/{args.epochs} Summary: "
+                f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% | "
+                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}% | "
+                f"LR: {current_lr:.6f} | Best Val: {best_val_acc:.2f}%\n"
+            )
+
+    finally:
         pbar.close()
-
-        # Validate
-        print("Validating...", end=' ')
-        val_loss, val_acc = validate(model, val_loader, criterion, device, epoch, writer)
-        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-
-        # Update learning rate
-        scheduler.step()
-        current_lr = optimizer.param_groups[0]['lr']
-        writer.add_scalar('Learning_Rate', current_lr, epoch)
-
-        # Save checkpoint
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': train_loss,
-            'train_acc': train_acc,
-            'val_loss': val_loss,
-            'val_acc': val_acc,
-            'best_val_acc': best_val_acc,
-            'class_names': class_names,
-            'use_msa': args.use_msa
-        }
-
-        # Save latest checkpoint
-        torch.save(checkpoint, os.path.join(args.output_dir, 'latest_checkpoint.pth'))
-
-        # Save best checkpoint
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            checkpoint['best_val_acc'] = best_val_acc
-            torch.save(checkpoint, os.path.join(args.output_dir, 'best_model.pth'))
-            print(f"★ New best model saved! (Val Acc: {val_acc:.2f}%)")
-
-        print(f"LR: {current_lr:.6f} | Best Val Acc: {best_val_acc:.2f}%")
 
     print("\n" + "=" * 80)
     print(f"Training completed! Best validation accuracy: {best_val_acc:.2f}%")

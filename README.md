@@ -190,6 +190,18 @@ python train.py \
   --use_msa
 ```
 
+### チェックポイント保存頻度の設定
+
+```bash
+# 10エポックごとにチェックポイントを保存（ディスク容量節約）
+python train.py \
+  --data_dir dataset \
+  --epochs 100 \
+  --save_freq 10
+
+# 注: best_model.pthは精度が向上した際に常に保存されます
+```
+
 ### 学習の再開
 
 ```bash
@@ -214,6 +226,7 @@ python train.py \
 | `--resume` | チェックポイントから再開 | `None` |
 | `--val_split` | Validationの分割比率（自動分割時） | `0.15` |
 | `--random_seed` | データ分割のランダムシード | `42` |
+| `--save_freq` | チェックポイント保存頻度（エポック数） | `1` |
 
 ### TensorBoardで学習過程を確認
 
@@ -227,10 +240,21 @@ tensorboard --logdir outputs/logs --port 6006
 
 ### 学習時の出力
 
-学習時には以下のファイルが生成されます:
+#### プログレスバー表示
 
-- `best_model.pth` - 最高精度のモデル
-- `latest_checkpoint.pth` - 最新のチェックポイント
+学習中は1つのプログレスバーで全エポックの進捗を表示します:
+
+```
+Epoch 5/50: 100%|██████████| 100/100 [00:45<00:00, 2.21it/s, loss=1.2345, acc=65.43%]
+
+Epoch 5/50 - Validating...
+Epoch 5/50 Summary: Train Loss: 1.2345, Train Acc: 65.43% | Val Loss: 1.3456, Val Acc: 63.21% | LR: 0.000095 | Best Val: 65.12%
+```
+
+#### 生成されるファイル
+
+- `best_model.pth` - 最高精度のモデル（精度向上時に自動保存）
+- `latest_checkpoint.pth` - チェックポイント（`--save_freq`で指定した頻度で保存）
 - `class_info.json` - クラス情報
 - `logs/` - TensorBoardのログ
 
