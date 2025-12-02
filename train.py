@@ -7,14 +7,13 @@ Supports 8 art styles with EfficientNet B7 and optional MSA-Net
 import os
 import argparse
 import json
-import shutil
 from pathlib import Path
 from collections import Counter
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler, Subset
 from torchvision import datasets, transforms
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -126,21 +125,12 @@ class EfficientNetWithMSA(nn.Module):
         return logits
 
 
-def prepare_dataset(data_dir, val_split=0.2, random_seed=42):
+def check_dataset_structure(data_dir):
     """
-    Prepare dataset by splitting into train/val if needed.
-
-    Supports two directory structures:
-    1. Already split: data_dir/train/ and data_dir/val/
-    2. Not split: data_dir/ with class folders directly
-
-    Args:
-        data_dir: Path to dataset directory
-        val_split: Validation split ratio (default: 0.2)
-        random_seed: Random seed for reproducibility
+    Check dataset structure and determine if it's already split.
 
     Returns:
-        Tuple of (train_dir, val_dir, is_temp) where is_temp indicates if dirs are temporary
+        str: 'split' if train/val dirs exist, 'unsplit' if class dirs exist directly
     """
     data_path = Path(data_dir)
     train_dir = data_path / 'train'
@@ -148,89 +138,20 @@ def prepare_dataset(data_dir, val_split=0.2, random_seed=42):
 
     # Check if already split
     if train_dir.exists() and val_dir.exists():
-        print(f"Dataset already split into train/val")
-        return str(train_dir.parent), False
+        return 'split'
 
-    print(f"Dataset not split. Automatically splitting with {val_split:.0%} for validation...")
-
-    # Expected class names
+    # Check for class directories
     expected_classes = ['anime', 'brush', 'thick', 'watercolor', 'photo', '3dcg', 'comic', 'pixelart']
-
-    # Find class directories
-    class_dirs = []
     for class_name in expected_classes:
         class_path = data_path / class_name
         if class_path.exists() and class_path.is_dir():
-            class_dirs.append(class_name)
+            return 'unsplit'
 
-    if not class_dirs:
-        raise ValueError(
-            f"No class directories found in {data_dir}. "
-            f"Expected: {', '.join(expected_classes)}"
-        )
-
-    print(f"Found {len(class_dirs)} classes: {', '.join(class_dirs)}")
-
-    # Create temp split directories
-    temp_train_dir = data_path / 'train'
-    temp_val_dir = data_path / 'val'
-
-    # Remove existing temp dirs if they exist
-    if temp_train_dir.exists():
-        shutil.rmtree(temp_train_dir)
-    if temp_val_dir.exists():
-        shutil.rmtree(temp_val_dir)
-
-    temp_train_dir.mkdir()
-    temp_val_dir.mkdir()
-
-    # Split each class
-    total_train = 0
-    total_val = 0
-
-    for class_name in class_dirs:
-        class_path = data_path / class_name
-
-        # Get all image files
-        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
-        image_files = [f for f in class_path.iterdir()
-                      if f.suffix.lower() in image_extensions]
-
-        if not image_files:
-            print(f"Warning: No images found in {class_name}/")
-            continue
-
-        # Stratified split
-        train_files, val_files = train_test_split(
-            image_files,
-            test_size=val_split,
-            random_state=random_seed
-        )
-
-        # Create class directories
-        train_class_dir = temp_train_dir / class_name
-        val_class_dir = temp_val_dir / class_name
-        train_class_dir.mkdir()
-        val_class_dir.mkdir()
-
-        # Create symbolic links
-        for img_file in train_files:
-            link_path = train_class_dir / img_file.name
-            link_path.symlink_to(img_file.absolute())
-
-        for img_file in val_files:
-            link_path = val_class_dir / img_file.name
-            link_path.symlink_to(img_file.absolute())
-
-        total_train += len(train_files)
-        total_val += len(val_files)
-
-        print(f"  {class_name:15s}: {len(train_files):4d} train, {len(val_files):4d} val")
-
-    print(f"\nTotal: {total_train} train, {total_val} val images")
-    print(f"Split ratio: {total_train/(total_train+total_val):.1%} / {total_val/(total_train+total_val):.1%}\n")
-
-    return str(data_path), True
+    raise ValueError(
+        f"Invalid dataset structure in {data_dir}. "
+        f"Expected either train/val directories or class directories "
+        f"({', '.join(expected_classes)})"
+    )
 
 
 def calculate_class_weights(dataset_path, class_names):
@@ -268,8 +189,14 @@ def calculate_class_weights(dataset_path, class_names):
     return weights, class_counts
 
 
-def get_data_loaders(data_dir, batch_size, num_workers=4):
-    """Create data loaders with augmentation"""
+def get_data_loaders(data_dir, batch_size, val_split=0.2, random_seed=42, num_workers=4):
+    """
+    Create data loaders with virtual train/val split.
+
+    Supports two dataset structures:
+    1. Pre-split: data_dir/train/ and data_dir/val/
+    2. Unsplit: data_dir/ with class folders directly (will be virtually split)
+    """
 
     # Data augmentation for training
     train_transform = transforms.Compose([
@@ -291,26 +218,101 @@ def get_data_loaders(data_dir, batch_size, num_workers=4):
                            std=[0.229, 0.224, 0.225])
     ])
 
-    # Load datasets
-    train_dataset = datasets.ImageFolder(
-        root=os.path.join(data_dir, 'train'),
-        transform=train_transform
-    )
+    # Check dataset structure
+    structure = check_dataset_structure(data_dir)
 
-    val_dataset = datasets.ImageFolder(
-        root=os.path.join(data_dir, 'val'),
-        transform=val_transform
-    )
+    if structure == 'split':
+        # Dataset already split into train/val
+        print("Dataset already split into train/val directories")
 
-    # Calculate class weights
-    class_names = train_dataset.classes
-    weights_dict, class_counts = calculate_class_weights(
-        os.path.join(data_dir, 'train'),
-        class_names
-    )
+        train_dataset = datasets.ImageFolder(
+            root=os.path.join(data_dir, 'train'),
+            transform=train_transform
+        )
+
+        val_dataset = datasets.ImageFolder(
+            root=os.path.join(data_dir, 'val'),
+            transform=val_transform
+        )
+
+        class_names = train_dataset.classes
+
+    else:
+        # Unsplit dataset - perform virtual split
+        print(f"Performing virtual train/val split ({1-val_split:.0%}/{val_split:.0%})...")
+
+        # Load full dataset without augmentation first
+        full_dataset = datasets.ImageFolder(root=data_dir)
+        class_names = full_dataset.classes
+
+        # Get labels for stratified split
+        labels = [label for _, label in full_dataset.samples]
+
+        # Perform stratified split
+        indices = list(range(len(full_dataset)))
+        train_indices, val_indices = train_test_split(
+            indices,
+            test_size=val_split,
+            random_state=random_seed,
+            stratify=labels
+        )
+
+        # Print split statistics
+        print("\nVirtual Split Statistics:")
+        print("-" * 50)
+        train_labels = [labels[i] for i in train_indices]
+        val_labels = [labels[i] for i in val_indices]
+
+        for idx, class_name in enumerate(class_names):
+            train_count = train_labels.count(idx)
+            val_count = val_labels.count(idx)
+            total = train_count + val_count
+            print(f"{class_name:15s}: {train_count:4d} train, {val_count:4d} val (total: {total})")
+
+        print("-" * 50)
+        print(f"Total: {len(train_indices)} train, {len(val_indices)} val")
+        print(f"Split ratio: {len(train_indices)/(len(train_indices)+len(val_indices)):.1%} / "
+              f"{len(val_indices)/(len(train_indices)+len(val_indices)):.1%}\n")
+
+        # Create subsets with appropriate transforms
+        # Note: We need to create the full dataset with each transform
+        train_dataset_full = datasets.ImageFolder(root=data_dir, transform=train_transform)
+        val_dataset_full = datasets.ImageFolder(root=data_dir, transform=val_transform)
+
+        train_dataset = Subset(train_dataset_full, train_indices)
+        val_dataset = Subset(val_dataset_full, val_indices)
+
+    # Calculate class weights from training data
+    if structure == 'split':
+        weights_dict, class_counts = calculate_class_weights(
+            os.path.join(data_dir, 'train'),
+            class_names
+        )
+        train_labels = [label for _, label in train_dataset.samples]
+    else:
+        # For virtual split, count from indices
+        class_counts = {}
+        for idx, class_name in enumerate(class_names):
+            count = train_labels.count(idx)
+            class_counts[class_name] = count
+
+        total = sum(class_counts.values())
+        weights_dict = {}
+        for class_name, count in class_counts.items():
+            if count > 0:
+                weights_dict[class_name] = total / (len(class_names) * count)
+            else:
+                weights_dict[class_name] = 0.0
+
+        print("\nDataset Statistics:")
+        print("-" * 50)
+        for class_name in class_names:
+            print(f"{class_name:15s}: {class_counts[class_name]:6d} images (weight: {weights_dict[class_name]:.4f})")
+        print("-" * 50)
+        print(f"Total: {total} images\n")
 
     # Create sample weights for weighted sampling
-    sample_weights = [weights_dict[class_names[label]] for _, label in train_dataset.samples]
+    sample_weights = [weights_dict[class_names[label]] for label in train_labels]
     sampler = WeightedRandomSampler(
         weights=sample_weights,
         num_samples=len(sample_weights),
@@ -448,20 +450,14 @@ def main():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"CUDA Version: {torch.version.cuda}")
 
-    # Prepare dataset (split if necessary)
-    print("\nPreparing dataset...")
-    data_dir, is_temp_split = prepare_dataset(
-        args.data_dir,
-        val_split=args.val_split,
-        random_seed=args.random_seed
-    )
-
-    # Load data
+    # Load data (with virtual split if necessary)
     print("\nLoading dataset...")
     train_loader, val_loader, class_weights, class_names = get_data_loaders(
-        data_dir,
+        args.data_dir,
         args.batch_size,
-        args.num_workers
+        val_split=args.val_split,
+        random_seed=args.random_seed,
+        num_workers=args.num_workers
     )
 
     # Create model
