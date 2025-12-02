@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""
+Art Style Classification Training Script
+Supports 8 art styles with EfficientNet B7 and optional MSA-Net
+"""
+
+import os
+import argparse
+import json
+from pathlib import Path
+from collections import Counter
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+import timm
+import numpy as np
+
+
+class MSABlock(nn.Module):
+    """Multimodal Style Aggregation Block"""
+    def __init__(self, in_channels, reduction=16):
+        super(MSABlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+        self.fc = nn.Sequential(
+            nn.Linear(in_channels * 2, in_channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_channels // reduction, in_channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+
+        # Average and max pooling
+        avg_out = self.avg_pool(x).view(b, c)
+        max_out = self.max_pool(x).view(b, c)
+
+        # Concatenate and pass through FC layers
+        concat = torch.cat([avg_out, max_out], dim=1)
+        attention = self.fc(concat).view(b, c, 1, 1)
+
+        return x * attention.expand_as(x)
+
+
+class EfficientNetWithMSA(nn.Module):
+    """EfficientNet B7 with optional MSA-Net blocks"""
+    def __init__(self, num_classes=8, use_msa=False, pretrained=True):
+        super(EfficientNetWithMSA, self).__init__()
+
+        # Load EfficientNet B7
+        self.backbone = timm.create_model('efficientnet_b7', pretrained=pretrained)
+
+        # Get the number of features before the classifier
+        in_features = self.backbone.classifier.in_features
+
+        # Remove the original classifier
+        self.backbone.classifier = nn.Identity()
+
+        # Add MSA blocks if requested
+        self.use_msa = use_msa
+        if use_msa:
+            self.msa_block = MSABlock(in_features)
+
+        # Custom classifier head
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=0.5),
+            nn.Linear(in_features, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.3),
+            nn.Linear(512, num_classes)
+        )
+
+        # For style space visualization
+        self.feature_extractor = nn.Linear(in_features, 2)
+
+    def forward(self, x, return_features=False):
+        # Extract features
+        features = self.backbone(x)
+
+        # Apply MSA if enabled
+        if self.use_msa and features.dim() == 4:
+            features = self.msa_block(features)
+            features = features.view(features.size(0), -1)
+
+        # Classification
+        logits = self.classifier(features)
+
+        if return_features:
+            # For visualization
+            coords = self.feature_extractor(features)
+            return logits, coords
+
+        return logits
+
+
+def calculate_class_weights(dataset_path, class_names):
+    """Calculate class weights for imbalanced datasets"""
+    class_counts = {}
+
+    for class_name in class_names:
+        class_path = os.path.join(dataset_path, class_name)
+        if os.path.exists(class_path):
+            count = len([f for f in os.listdir(class_path)
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp'))])
+            class_counts[class_name] = count
+        else:
+            class_counts[class_name] = 0
+
+    # Calculate weights (inverse frequency)
+    total = sum(class_counts.values())
+    if total == 0:
+        raise ValueError(f"No images found in {dataset_path}")
+
+    weights = {}
+    for class_name, count in class_counts.items():
+        if count > 0:
+            weights[class_name] = total / (len(class_names) * count)
+        else:
+            weights[class_name] = 0.0
+
+    print("\nDataset Statistics:")
+    print("-" * 50)
+    for class_name in class_names:
+        print(f"{class_name:15s}: {class_counts[class_name]:6d} images (weight: {weights[class_name]:.4f})")
+    print("-" * 50)
+    print(f"Total: {total} images\n")
+
+    return weights, class_counts
+
+
+def get_data_loaders(data_dir, batch_size, num_workers=4):
+    """Create data loaders with augmentation"""
+
+    # Data augmentation for training
+    train_transform = transforms.Compose([
+        transforms.Resize((600, 600)),
+        transforms.RandomResizedCrop(512, scale=(0.8, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
+
+    # Validation transform (no augmentation)
+    val_transform = transforms.Compose([
+        transforms.Resize((512, 512)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
+
+    # Load datasets
+    train_dataset = datasets.ImageFolder(
+        root=os.path.join(data_dir, 'train'),
+        transform=train_transform
+    )
+
+    val_dataset = datasets.ImageFolder(
+        root=os.path.join(data_dir, 'val'),
+        transform=val_transform
+    )
+
+    # Calculate class weights
+    class_names = train_dataset.classes
+    weights_dict, class_counts = calculate_class_weights(
+        os.path.join(data_dir, 'train'),
+        class_names
+    )
+
+    # Create sample weights for weighted sampling
+    sample_weights = [weights_dict[class_names[label]] for _, label in train_dataset.samples]
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+
+    # Convert weights to tensor for loss function
+    class_weights = torch.tensor([weights_dict[name] for name in class_names],
+                                  dtype=torch.float32)
+
+    return train_loader, val_loader, class_weights, class_names
+
+
+def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer, pbar):
+    """Train for one epoch"""
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+
+    for batch_idx, (inputs, targets) in enumerate(train_loader):
+        inputs, targets = inputs.to(device), targets.to(device)
+
+        # Forward pass
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+
+        # Statistics
+        running_loss += loss.item()
+        _, predicted = outputs.max(1)
+        total += targets.size(0)
+        correct += predicted.eq(targets).sum().item()
+
+        # Update progress bar (without creating new line)
+        pbar.set_postfix({
+            'loss': running_loss / (batch_idx + 1),
+            'acc': 100. * correct / total
+        })
+        pbar.update(1)
+
+    epoch_loss = running_loss / len(train_loader)
+    epoch_acc = 100. * correct / total
+
+    # Log to tensorboard
+    writer.add_scalar('Train/Loss', epoch_loss, epoch)
+    writer.add_scalar('Train/Accuracy', epoch_acc, epoch)
+
+    return epoch_loss, epoch_acc
+
+
+def validate(model, val_loader, criterion, device, epoch, writer):
+    """Validate the model"""
+    model.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for inputs, targets in val_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+
+            running_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+
+    epoch_loss = running_loss / len(val_loader)
+    epoch_acc = 100. * correct / total
+
+    # Log to tensorboard
+    writer.add_scalar('Val/Loss', epoch_loss, epoch)
+    writer.add_scalar('Val/Accuracy', epoch_acc, epoch)
+
+    return epoch_loss, epoch_acc
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Art Style Classification Training')
+    parser.add_argument('--data_dir', type=str, default='dataset',
+                       help='Path to dataset directory')
+    parser.add_argument('--output_dir', type=str, default='outputs',
+                       help='Path to output directory')
+    parser.add_argument('--batch_size', type=int, default=8,
+                       help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=50,
+                       help='Number of training epochs')
+    parser.add_argument('--lr', type=float, default=1e-4,
+                       help='Learning rate')
+    parser.add_argument('--num_workers', type=int, default=4,
+                       help='Number of data loading workers')
+    parser.add_argument('--use_msa', action='store_true',
+                       help='Use MSA-Net blocks (default: False)')
+    parser.add_argument('--resume', type=str, default=None,
+                       help='Path to checkpoint to resume from')
+
+    args = parser.parse_args()
+
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Device configuration
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA Version: {torch.version.cuda}")
+
+    # Load data
+    print("\nLoading dataset...")
+    train_loader, val_loader, class_weights, class_names = get_data_loaders(
+        args.data_dir,
+        args.batch_size,
+        args.num_workers
+    )
+
+    # Create model
+    print(f"\nCreating model (MSA-Net: {'Enabled' if args.use_msa else 'Disabled'})...")
+    model = EfficientNetWithMSA(
+        num_classes=len(class_names),
+        use_msa=args.use_msa,
+        pretrained=True
+    ).to(device)
+
+    # Loss function with class weights
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+
+    # Optimizer
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
+    # Learning rate scheduler
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
+    # TensorBoard writer
+    writer = SummaryWriter(log_dir=os.path.join(args.output_dir, 'logs'))
+
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    best_val_acc = 0.0
+
+    if args.resume:
+        print(f"\nLoading checkpoint from {args.resume}")
+        checkpoint = torch.load(args.resume)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_val_acc = checkpoint.get('best_val_acc', 0.0)
+        print(f"Resumed from epoch {start_epoch}")
+
+    # Save class names
+    class_info = {
+        'class_names': class_names,
+        'num_classes': len(class_names),
+        'use_msa': args.use_msa
+    }
+    with open(os.path.join(args.output_dir, 'class_info.json'), 'w') as f:
+        json.dump(class_info, f, indent=2)
+
+    # Training loop
+    print(f"\nStarting training for {args.epochs} epochs...")
+    print("=" * 80)
+
+    for epoch in range(start_epoch, args.epochs):
+        print(f"\nEpoch {epoch+1}/{args.epochs}")
+        print("-" * 80)
+
+        # Create progress bar for this epoch
+        total_batches = len(train_loader)
+        pbar = tqdm(total=total_batches, desc='Training',
+                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}',
+                   leave=True)
+
+        # Train
+        train_loss, train_acc = train_epoch(
+            model, train_loader, criterion, optimizer, device, epoch, writer, pbar
+        )
+        pbar.close()
+
+        # Validate
+        print("Validating...", end=' ')
+        val_loss, val_acc = validate(model, val_loader, criterion, device, epoch, writer)
+        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+
+        # Update learning rate
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+        writer.add_scalar('Learning_Rate', current_lr, epoch)
+
+        # Save checkpoint
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'val_loss': val_loss,
+            'val_acc': val_acc,
+            'best_val_acc': best_val_acc,
+            'class_names': class_names,
+            'use_msa': args.use_msa
+        }
+
+        # Save latest checkpoint
+        torch.save(checkpoint, os.path.join(args.output_dir, 'latest_checkpoint.pth'))
+
+        # Save best checkpoint
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            checkpoint['best_val_acc'] = best_val_acc
+            torch.save(checkpoint, os.path.join(args.output_dir, 'best_model.pth'))
+            print(f"★ New best model saved! (Val Acc: {val_acc:.2f}%)")
+
+        print(f"LR: {current_lr:.6f} | Best Val Acc: {best_val_acc:.2f}%")
+
+    print("\n" + "=" * 80)
+    print(f"Training completed! Best validation accuracy: {best_val_acc:.2f}%")
+    print(f"Model saved to: {args.output_dir}")
+
+    writer.close()
+
+
+if __name__ == '__main__':
+    main()
