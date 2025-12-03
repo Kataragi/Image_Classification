@@ -23,56 +23,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
-import random
-import torch.nn.functional as F
-
-
-class RandomCropDataset(torch.utils.data.Dataset):
-    """Dataset wrapper that generates 4 random 600x600 crops from each image"""
-    def __init__(self, base_dataset, crop_size=600, num_crops=4):
-        self.base_dataset = base_dataset
-        self.crop_size = crop_size
-        self.num_crops = num_crops
-
-    def __len__(self):
-        return len(self.base_dataset)
-
-    def __getitem__(self, idx):
-        image, label = self.base_dataset[idx]
-        c, h, w = image.shape
-
-        # If image is smaller than crop_size, resize it
-        if h < self.crop_size or w < self.crop_size:
-            scale = max(self.crop_size / h, self.crop_size / w)
-            new_h = max(int(h * scale), self.crop_size)
-            new_w = max(int(w * scale), self.crop_size)
-            image = F.interpolate(
-                image.unsqueeze(0),
-                size=(new_h, new_w),
-                mode='bilinear',
-                align_corners=False
-            ).squeeze(0)
-            c, h, w = image.shape
-
-        # Generate 4 random crops
-        crops = []
-        for _ in range(self.num_crops):
-            # Random crop position
-            if h > self.crop_size:
-                top = random.randint(0, h - self.crop_size)
-            else:
-                top = 0
-
-            if w > self.crop_size:
-                left = random.randint(0, w - self.crop_size)
-            else:
-                left = 0
-
-            crop = image[:, top:top + self.crop_size, left:left + self.crop_size]
-            crops.append(crop)
-
-        # Stack crops: (num_crops, C, H, W)
-        return torch.stack(crops), label
 
 
 class MSABlock(nn.Module):
@@ -105,7 +55,7 @@ class MSABlock(nn.Module):
 
 class EfficientNetWithMSA(nn.Module):
     """EfficientNet B7 with optional MSA-Net blocks"""
-    def __init__(self, num_classes=8, use_msa=False, pretrained=True):
+    def __init__(self, num_classes=8, use_msa=False, pretrained=True, hidden_dim=600):
         super(EfficientNetWithMSA, self).__init__()
 
         # Load EfficientNet B7 with pretrained weights
@@ -146,13 +96,14 @@ class EfficientNetWithMSA(nn.Module):
         if use_msa:
             self.msa_block = MSABlock(in_features)
 
-        # Custom classifier head
+        # Custom classifier head with configurable hidden dimension
+        self.hidden_dim = hidden_dim
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.5),
-            nn.Linear(in_features, 600),
+            nn.Linear(in_features, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.3),
-            nn.Linear(600, num_classes)
+            nn.Linear(hidden_dim, num_classes)
         )
 
         # For style space visualization
@@ -629,12 +580,23 @@ def main():
         resolution=args.resolution
     )
 
+    # Determine hidden_dim for model creation
+    hidden_dim = 600  # Default for new training
+
+    # If resuming, load checkpoint first to get model configuration
+    if args.resume:
+        print(f"\nLoading checkpoint from {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        hidden_dim = checkpoint.get('hidden_dim', 512)  # Default to 512 for old checkpoints
+        print(f"Loaded checkpoint with hidden_dim={hidden_dim}")
+
     # Create model
-    print(f"\nCreating model (MSA-Net: {'Enabled' if args.use_msa else 'Disabled'})...")
+    print(f"\nCreating model (MSA-Net: {'Enabled' if args.use_msa else 'Disabled'}, hidden_dim={hidden_dim})...")
     model = EfficientNetWithMSA(
         num_classes=len(class_names),
         use_msa=args.use_msa,
-        pretrained=True
+        pretrained=not args.resume,  # Don't load pretrained weights if resuming
+        hidden_dim=hidden_dim
     )
 
     # CRITICAL: Move model to GPU
@@ -666,8 +628,6 @@ def main():
     prev_val_loss = float('inf')
 
     if args.resume:
-        print(f"\nLoading checkpoint from {args.resume}")
-        checkpoint = torch.load(args.resume)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
@@ -680,7 +640,8 @@ def main():
         'class_names': class_names,
         'num_classes': len(class_names),
         'use_msa': args.use_msa,
-        'resolution': args.resolution
+        'resolution': args.resolution,
+        'hidden_dim': model.hidden_dim
     }
     with open(os.path.join(args.output_dir, 'class_info.json'), 'w') as f:
         json.dump(class_info, f, indent=2)
@@ -730,7 +691,8 @@ def main():
                         'prev_val_loss': prev_val_loss,
                         'class_names': class_names,
                         'use_msa': args.use_msa,
-                        'resolution': args.resolution
+                        'resolution': args.resolution,
+                        'hidden_dim': model.hidden_dim
                     }
                     torch.save(checkpoint, os.path.join(args.output_dir, 'early_stopped_checkpoint.pth'))
                     pbar.write(f"Model saved to early_stopped_checkpoint.pth")
@@ -757,7 +719,8 @@ def main():
                 'prev_val_loss': val_loss,
                 'class_names': class_names,
                 'use_msa': args.use_msa,
-                'resolution': args.resolution
+                'resolution': args.resolution,
+                'hidden_dim': model.hidden_dim
             }
 
             # Save latest checkpoint based on save_freq

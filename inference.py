@@ -18,46 +18,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from tqdm import tqdm
-import random
 
 # Import model and utilities from train.py
 from train import EfficientNetWithMSA
-
-
-def generate_random_crops(image_tensor, crop_size=600, num_crops=4):
-    """Generate random crops from an image tensor"""
-    c, h, w = image_tensor.shape
-
-    # If image is smaller than crop_size, resize it
-    if h < crop_size or w < crop_size:
-        scale = max(crop_size / h, crop_size / w)
-        new_h = max(int(h * scale), crop_size)
-        new_w = max(int(w * scale), crop_size)
-        image_tensor = F.interpolate(
-            image_tensor.unsqueeze(0),
-            size=(new_h, new_w),
-            mode='bilinear',
-            align_corners=False
-        ).squeeze(0)
-        c, h, w = image_tensor.shape
-
-    # Generate random crops
-    crops = []
-    for _ in range(num_crops):
-        if h > crop_size:
-            top = random.randint(0, h - crop_size)
-        else:
-            top = 0
-
-        if w > crop_size:
-            left = random.randint(0, w - crop_size)
-        else:
-            left = 0
-
-        crop = image_tensor[:, top:top + crop_size, left:left + crop_size]
-        crops.append(crop)
-
-    return torch.stack(crops)
 
 
 class StyleSpaceVisualizer:
@@ -218,12 +181,14 @@ def load_model(checkpoint_path, device):
     class_names = checkpoint.get('class_names', [])
     use_msa = checkpoint.get('use_msa', False)
     resolution = checkpoint.get('resolution', 600)  # Default to 600 for backward compatibility
+    hidden_dim = checkpoint.get('hidden_dim', 512)  # Default to 512 for old checkpoints
 
     # Create model
     model = EfficientNetWithMSA(
         num_classes=len(class_names),
         use_msa=use_msa,
-        pretrained=False
+        pretrained=False,
+        hidden_dim=hidden_dim
     ).to(device)
 
     # Load weights
