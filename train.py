@@ -23,6 +23,56 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+import random
+import torch.nn.functional as F
+
+
+class RandomCropDataset(torch.utils.data.Dataset):
+    """Dataset wrapper that generates 4 random 512x512 crops from each image"""
+    def __init__(self, base_dataset, crop_size=512, num_crops=4):
+        self.base_dataset = base_dataset
+        self.crop_size = crop_size
+        self.num_crops = num_crops
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        image, label = self.base_dataset[idx]
+        c, h, w = image.shape
+
+        # If image is smaller than crop_size, resize it
+        if h < self.crop_size or w < self.crop_size:
+            scale = max(self.crop_size / h, self.crop_size / w)
+            new_h = max(int(h * scale), self.crop_size)
+            new_w = max(int(w * scale), self.crop_size)
+            image = F.interpolate(
+                image.unsqueeze(0),
+                size=(new_h, new_w),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
+            c, h, w = image.shape
+
+        # Generate 4 random crops
+        crops = []
+        for _ in range(self.num_crops):
+            # Random crop position
+            if h > self.crop_size:
+                top = random.randint(0, h - self.crop_size)
+            else:
+                top = 0
+
+            if w > self.crop_size:
+                left = random.randint(0, w - self.crop_size)
+            else:
+                left = 0
+
+            crop = image[:, top:top + self.crop_size, left:left + self.crop_size]
+            crops.append(crop)
+
+        # Stack crops: (num_crops, C, H, W)
+        return torch.stack(crops), label
 
 
 class MSABlock(nn.Module):
@@ -109,23 +159,52 @@ class EfficientNetWithMSA(nn.Module):
         self.feature_extractor = nn.Linear(in_features, 2)
 
     def forward(self, x, return_features=False):
-        # Extract features
-        features = self.backbone(x)
+        # Check if input has multiple crops (5D tensor: batch, num_crops, C, H, W)
+        if x.dim() == 5:
+            batch_size, num_crops, c, h, w = x.shape
+            # Reshape to process all crops: (batch_size * num_crops, C, H, W)
+            x = x.view(batch_size * num_crops, c, h, w)
 
-        # Apply MSA if enabled
-        if self.use_msa and features.dim() == 4:
-            features = self.msa_block(features)
-            features = features.view(features.size(0), -1)
+            # Extract features
+            features = self.backbone(x)
 
-        # Classification
-        logits = self.classifier(features)
+            # Apply MSA if enabled
+            if self.use_msa and features.dim() == 4:
+                features = self.msa_block(features)
+                features = features.view(features.size(0), -1)
 
-        if return_features:
-            # For visualization
-            coords = self.feature_extractor(features)
-            return logits, coords
+            # Classification
+            logits = self.classifier(features)  # (batch_size * num_crops, num_classes)
 
-        return logits
+            # Reshape back and average: (batch_size, num_crops, num_classes)
+            logits = logits.view(batch_size, num_crops, -1)
+            logits = logits.mean(dim=1)  # Average across crops
+
+            if return_features:
+                # For visualization: average features across crops
+                features = features.view(batch_size, num_crops, -1).mean(dim=1)
+                coords = self.feature_extractor(features)
+                return logits, coords
+
+            return logits
+        else:
+            # Single image mode (no crops)
+            features = self.backbone(x)
+
+            # Apply MSA if enabled
+            if self.use_msa and features.dim() == 4:
+                features = self.msa_block(features)
+                features = features.view(features.size(0), -1)
+
+            # Classification
+            logits = self.classifier(features)
+
+            if return_features:
+                # For visualization
+                coords = self.feature_extractor(features)
+                return logits, coords
+
+            return logits
 
 
 def check_dataset_structure(data_dir):
@@ -322,11 +401,16 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
         replacement=True
     )
 
+    # Wrap datasets with RandomCropDataset for 4 random 512x512 crops
+    print("\n[Random Crop Mode] Generating 4 random 512x512 crops per image")
+    train_dataset_cropped = RandomCropDataset(train_dataset, crop_size=512, num_crops=4)
+    val_dataset_cropped = RandomCropDataset(val_dataset, crop_size=512, num_crops=4)
+
     # Create data loaders
     # Disable persistent_workers to avoid semaphore leak
     # Use 'forkserver' context for better GPU compatibility
     train_loader = DataLoader(
-        train_dataset,
+        train_dataset_cropped,
         batch_size=batch_size,
         sampler=sampler,
         num_workers=num_workers,
@@ -336,7 +420,7 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
     )
 
     val_loader = DataLoader(
-        val_dataset,
+        val_dataset_cropped,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,

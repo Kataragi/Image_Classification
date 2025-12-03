@@ -18,9 +18,46 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from tqdm import tqdm
+import random
 
-# Import model from train.py
+# Import model and utilities from train.py
 from train import EfficientNetWithMSA
+
+
+def generate_random_crops(image_tensor, crop_size=512, num_crops=4):
+    """Generate random crops from an image tensor"""
+    c, h, w = image_tensor.shape
+
+    # If image is smaller than crop_size, resize it
+    if h < crop_size or w < crop_size:
+        scale = max(crop_size / h, crop_size / w)
+        new_h = max(int(h * scale), crop_size)
+        new_w = max(int(w * scale), crop_size)
+        image_tensor = F.interpolate(
+            image_tensor.unsqueeze(0),
+            size=(new_h, new_w),
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(0)
+        c, h, w = image_tensor.shape
+
+    # Generate random crops
+    crops = []
+    for _ in range(num_crops):
+        if h > crop_size:
+            top = random.randint(0, h - crop_size)
+        else:
+            top = 0
+
+        if w > crop_size:
+            left = random.randint(0, w - crop_size)
+        else:
+            left = 0
+
+        crop = image_tensor[:, top:top + crop_size, left:left + crop_size]
+        crops.append(crop)
+
+    return torch.stack(crops)
 
 
 class StyleSpaceVisualizer:
@@ -206,14 +243,19 @@ def get_transform():
 
 
 def predict_single_image(model, image_path, transform, class_names, device):
-    """Predict single image"""
+    """Predict single image with 4 random crops"""
     # Load and preprocess image
     image = Image.open(image_path).convert('RGB')
-    input_tensor = transform(image).unsqueeze(0).to(device)
+    input_tensor = transform(image)
+
+    # Generate 4 random crops
+    crops = generate_random_crops(input_tensor, crop_size=512, num_crops=4)
+    # Add batch dimension: (1, 4, C, H, W)
+    crops = crops.unsqueeze(0).to(device)
 
     # Predict
     with torch.no_grad():
-        logits, coords = model(input_tensor, return_features=True)
+        logits, coords = model(crops, return_features=True)
         probs = F.softmax(logits, dim=1)
         confidence, predicted = torch.max(probs, 1)
 
@@ -277,10 +319,14 @@ def build_style_space_reference(model, data_dir, class_names, device, output_pat
         for image_path in tqdm(image_files, desc=f"  {class_name}", leave=False):
             try:
                 image = Image.open(image_path).convert('RGB')
-                input_tensor = transform(image).unsqueeze(0).to(device)
+                input_tensor = transform(image)
+
+                # Generate 4 random crops for consistency with training
+                crops = generate_random_crops(input_tensor, crop_size=512, num_crops=4)
+                crops = crops.unsqueeze(0).to(device)
 
                 with torch.no_grad():
-                    _, coords = model(input_tensor, return_features=True)
+                    _, coords = model(crops, return_features=True)
                     all_coords.append(coords[0])
                     all_labels.append(idx)
 
