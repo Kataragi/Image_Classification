@@ -20,6 +20,9 @@ from tqdm import tqdm
 import timm
 import numpy as np
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 class MSABlock(nn.Module):
@@ -405,12 +408,15 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, total_
     return epoch_loss, epoch_acc
 
 
-def validate(model, val_loader, criterion, device, epoch, writer):
-    """Validate the model"""
+def validate(model, val_loader, criterion, device, epoch, writer, class_names):
+    """Validate the model and compute confusion matrix"""
     model.eval()
     running_loss = 0.0
     correct = 0
     total = 0
+
+    all_predictions = []
+    all_targets = []
 
     with torch.no_grad():
         for inputs, targets in val_loader:
@@ -426,12 +432,33 @@ def validate(model, val_loader, criterion, device, epoch, writer):
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
 
+            # Collect predictions and targets for confusion matrix
+            all_predictions.extend(predicted.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+
     epoch_loss = running_loss / len(val_loader)
     epoch_acc = 100. * correct / total
 
     # Log to tensorboard
     writer.add_scalar('Val/Loss', epoch_loss, epoch)
     writer.add_scalar('Val/Accuracy', epoch_acc, epoch)
+
+    # Create and log confusion matrix
+    cm = confusion_matrix(all_targets, all_predictions)
+
+    # Create confusion matrix figure
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names,
+                cbar_kws={'label': 'Count'})
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('True')
+    ax.set_title(f'Confusion Matrix - Epoch {epoch+1}')
+    plt.tight_layout()
+
+    # Log to tensorboard
+    writer.add_figure('Confusion Matrix', fig, epoch)
+    plt.close(fig)
 
     return epoch_loss, epoch_acc
 
@@ -460,6 +487,8 @@ def main():
                        help='Random seed for dataset split (default: 42)')
     parser.add_argument('--save_freq', type=int, default=1,
                        help='Save checkpoint every N epochs (default: 1, best model is always saved)')
+    parser.add_argument('--early_stop_on_loss_increase', action='store_true',
+                       help='Stop training if validation loss increases from previous epoch')
 
     args = parser.parse_args()
 
@@ -549,6 +578,7 @@ def main():
     # Resume from checkpoint if specified
     start_epoch = 0
     best_val_acc = 0.0
+    prev_val_loss = float('inf')
 
     if args.resume:
         print(f"\nLoading checkpoint from {args.resume}")
@@ -557,6 +587,7 @@ def main():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_val_acc = checkpoint.get('best_val_acc', 0.0)
+        prev_val_loss = checkpoint.get('prev_val_loss', float('inf'))
         print(f"Resumed from epoch {start_epoch}")
 
     # Save class names
@@ -592,7 +623,34 @@ def main():
 
             # Validate
             pbar.write(f"\nEpoch {epoch+1}/{args.epochs} - Validating...")
-            val_loss, val_acc = validate(model, val_loader, criterion, device, epoch, writer)
+            val_loss, val_acc = validate(model, val_loader, criterion, device, epoch, writer, class_names)
+
+            # Check for early stopping if enabled
+            if args.early_stop_on_loss_increase:
+                if val_loss > prev_val_loss:
+                    pbar.write(f"\n⚠ Validation loss increased from {prev_val_loss:.4f} to {val_loss:.4f}")
+                    pbar.write(f"Early stopping triggered at epoch {epoch+1}")
+
+                    # Save final checkpoint before stopping
+                    checkpoint = {
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'train_loss': train_loss,
+                        'train_acc': train_acc,
+                        'val_loss': val_loss,
+                        'val_acc': val_acc,
+                        'best_val_acc': best_val_acc,
+                        'prev_val_loss': prev_val_loss,
+                        'class_names': class_names,
+                        'use_msa': args.use_msa
+                    }
+                    torch.save(checkpoint, os.path.join(args.output_dir, 'early_stopped_checkpoint.pth'))
+                    pbar.write(f"Model saved to early_stopped_checkpoint.pth")
+                    pbar.write(f"Training stopped at epoch {epoch+1}/{args.epochs}")
+                    break
+                else:
+                    prev_val_loss = val_loss
 
             # Update learning rate
             scheduler.step()
@@ -609,6 +667,7 @@ def main():
                 'val_loss': val_loss,
                 'val_acc': val_acc,
                 'best_val_acc': best_val_acc,
+                'prev_val_loss': val_loss,
                 'class_names': class_names,
                 'use_msa': args.use_msa
             }

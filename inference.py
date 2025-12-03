@@ -83,9 +83,19 @@ class StyleSpaceVisualizer:
 
         fig, ax = plt.subplots(figsize=(14, 10))
 
-        # Color map for classes
-        colors = plt.cm.tab10(np.linspace(0, 1, len(self.class_centers)))
-        color_map = {name: colors[i] for i, name in enumerate(self.class_centers.keys())}
+        # Primary color map for classes (vivid colors for better visibility)
+        primary_colors = [
+            (1.0, 0.0, 0.0),    # Red
+            (0.0, 0.0, 1.0),    # Blue
+            (0.0, 0.8, 0.0),    # Green
+            (1.0, 0.8, 0.0),    # Yellow
+            (1.0, 0.0, 1.0),    # Magenta
+            (0.0, 0.8, 0.8),    # Cyan
+            (1.0, 0.5, 0.0),    # Orange
+            (0.6, 0.0, 0.8),    # Purple
+        ]
+        color_map = {name: primary_colors[i % len(primary_colors)]
+                     for i, name in enumerate(self.class_centers.keys())}
 
         # Plot training data distribution
         for class_name, coords in self.class_coords.items():
