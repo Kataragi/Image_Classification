@@ -24,7 +24,7 @@ import random
 from train import EfficientNetWithMSA
 
 
-def generate_random_crops(image_tensor, crop_size=600, num_crops=4):
+def generate_random_crops(image_tensor, crop_size=512, num_crops=4):
     """Generate random crops from an image tensor"""
     c, h, w = image_tensor.shape
 
@@ -217,7 +217,7 @@ def load_model(checkpoint_path, device):
     # Get model configuration
     class_names = checkpoint.get('class_names', [])
     use_msa = checkpoint.get('use_msa', False)
-    resolution = checkpoint.get('resolution', 600)  # Default to 600 for backward compatibility
+    resolution = checkpoint.get('resolution', 512)  # Default to 512 for backward compatibility
 
     # Create model
     model = EfficientNetWithMSA(
@@ -233,7 +233,7 @@ def load_model(checkpoint_path, device):
     return model, class_names, resolution
 
 
-def get_transform(resolution=600):
+def get_transform(resolution=512):
     """Get inference transform"""
     return transforms.Compose([
         transforms.Resize((resolution, resolution)),
@@ -294,7 +294,7 @@ def predict_folder(model, folder_path, transform, class_names, device):
     return results
 
 
-def build_style_space_reference(model, data_dir, class_names, device, output_path, resolution=600):
+def build_style_space_reference(model, data_dir, class_names, device, output_path, resolution=512):
     """Build style space reference from training data"""
     transform = get_transform(resolution)
 
