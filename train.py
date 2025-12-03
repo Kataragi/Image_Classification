@@ -28,8 +28,8 @@ import torch.nn.functional as F
 
 
 class RandomCropDataset(torch.utils.data.Dataset):
-    """Dataset wrapper that generates 4 random 600x600 crops from each image"""
-    def __init__(self, base_dataset, crop_size=600, num_crops=4):
+    """Dataset wrapper that generates 4 random 512x512 crops from each image"""
+    def __init__(self, base_dataset, crop_size=512, num_crops=4):
         self.base_dataset = base_dataset
         self.crop_size = crop_size
         self.num_crops = num_crops
@@ -149,10 +149,10 @@ class EfficientNetWithMSA(nn.Module):
         # Custom classifier head
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.5),
-            nn.Linear(in_features, 600),
+            nn.Linear(in_features, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.3),
-            nn.Linear(600, num_classes)
+            nn.Linear(512, num_classes)
         )
 
         # For style space visualization
@@ -271,7 +271,7 @@ def calculate_class_weights(dataset_path, class_names):
     return weights, class_counts
 
 
-def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_workers=4, resolution=600):
+def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_workers=4, resolution=512):
     """
     Create data loaders with virtual train/val split.
 
@@ -571,8 +571,8 @@ def main():
                        help='Save checkpoint every N epochs (default: 1, best model is always saved)')
     parser.add_argument('--early_stop_on_loss_increase', action='store_true',
                        help='Stop training if validation loss increases from previous epoch')
-    parser.add_argument('--resolution', type=int, default=600,
-                       help='Training image resolution (default: 600)')
+    parser.add_argument('--resolution', type=int, default=512,
+                       help='Training image resolution (default: 512)')
 
     args = parser.parse_args()
 
