@@ -271,7 +271,7 @@ def calculate_class_weights(dataset_path, class_names):
     return weights, class_counts
 
 
-def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_workers=4):
+def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_workers=4, resolution=600):
     """
     Create data loaders with virtual train/val split.
 
@@ -282,8 +282,8 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
 
     # Data augmentation for training
     train_transform = transforms.Compose([
-        transforms.Resize((600, 600)),
-        transforms.RandomResizedCrop(600, scale=(0.8, 1.0)),
+        transforms.Resize((resolution, resolution)),
+        transforms.RandomResizedCrop(resolution, scale=(0.8, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(15),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
@@ -294,7 +294,7 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
 
     # Validation transform (no augmentation)
     val_transform = transforms.Compose([
-        transforms.Resize((600, 600)),
+        transforms.Resize((resolution, resolution)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                            std=[0.229, 0.224, 0.225])
@@ -401,16 +401,14 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
         replacement=True
     )
 
-    # Wrap datasets with RandomCropDataset for 4 random 600x600 crops
-    print("\n[Random Crop Mode] Generating 4 random 600x600 crops per image")
-    train_dataset_cropped = RandomCropDataset(train_dataset, crop_size=600, num_crops=4)
-    val_dataset_cropped = RandomCropDataset(val_dataset, crop_size=600, num_crops=4)
+    # Create data loaders (patch-based processing removed - using full image)
+    print(f"\n[Full Image Mode] Using {resolution}x{resolution} resolution")
 
     # Create data loaders
     # Disable persistent_workers to avoid semaphore leak
     # Use 'forkserver' context for better GPU compatibility
     train_loader = DataLoader(
-        train_dataset_cropped,
+        train_dataset,
         batch_size=batch_size,
         sampler=sampler,
         num_workers=num_workers,
@@ -420,7 +418,7 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
     )
 
     val_loader = DataLoader(
-        val_dataset_cropped,
+        val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
@@ -573,6 +571,8 @@ def main():
                        help='Save checkpoint every N epochs (default: 1, best model is always saved)')
     parser.add_argument('--early_stop_on_loss_increase', action='store_true',
                        help='Stop training if validation loss increases from previous epoch')
+    parser.add_argument('--resolution', type=int, default=600,
+                       help='Training image resolution (default: 600)')
 
     args = parser.parse_args()
 
@@ -625,7 +625,8 @@ def main():
         args.batch_size,
         val_split=args.val_split,
         random_seed=args.random_seed,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        resolution=args.resolution
     )
 
     # Create model
@@ -674,11 +675,12 @@ def main():
         prev_val_loss = checkpoint.get('prev_val_loss', float('inf'))
         print(f"Resumed from epoch {start_epoch}")
 
-    # Save class names
+    # Save class names and training configuration
     class_info = {
         'class_names': class_names,
         'num_classes': len(class_names),
-        'use_msa': args.use_msa
+        'use_msa': args.use_msa,
+        'resolution': args.resolution
     }
     with open(os.path.join(args.output_dir, 'class_info.json'), 'w') as f:
         json.dump(class_info, f, indent=2)
@@ -727,7 +729,8 @@ def main():
                         'best_val_acc': best_val_acc,
                         'prev_val_loss': prev_val_loss,
                         'class_names': class_names,
-                        'use_msa': args.use_msa
+                        'use_msa': args.use_msa,
+                        'resolution': args.resolution
                     }
                     torch.save(checkpoint, os.path.join(args.output_dir, 'early_stopped_checkpoint.pth'))
                     pbar.write(f"Model saved to early_stopped_checkpoint.pth")
@@ -753,7 +756,8 @@ def main():
                 'best_val_acc': best_val_acc,
                 'prev_val_loss': val_loss,
                 'class_names': class_names,
-                'use_msa': args.use_msa
+                'use_msa': args.use_msa,
+                'resolution': args.resolution
             }
 
             # Save latest checkpoint based on save_freq
