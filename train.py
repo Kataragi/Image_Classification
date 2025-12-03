@@ -28,8 +28,8 @@ import torch.nn.functional as F
 
 
 class RandomCropDataset(torch.utils.data.Dataset):
-    """Dataset wrapper that generates 4 random 512x512 crops from each image"""
-    def __init__(self, base_dataset, crop_size=512, num_crops=4):
+    """Dataset wrapper that generates 4 random 600x600 crops from each image"""
+    def __init__(self, base_dataset, crop_size=600, num_crops=4):
         self.base_dataset = base_dataset
         self.crop_size = crop_size
         self.num_crops = num_crops
@@ -149,10 +149,10 @@ class EfficientNetWithMSA(nn.Module):
         # Custom classifier head
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.5),
-            nn.Linear(in_features, 512),
+            nn.Linear(in_features, 600),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.3),
-            nn.Linear(512, num_classes)
+            nn.Linear(600, num_classes)
         )
 
         # For style space visualization
@@ -283,7 +283,7 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
     # Data augmentation for training
     train_transform = transforms.Compose([
         transforms.Resize((600, 600)),
-        transforms.RandomResizedCrop(512, scale=(0.8, 1.0)),
+        transforms.RandomResizedCrop(600, scale=(0.8, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(15),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
@@ -294,7 +294,7 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
 
     # Validation transform (no augmentation)
     val_transform = transforms.Compose([
-        transforms.Resize((512, 512)),
+        transforms.Resize((600, 600)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                            std=[0.229, 0.224, 0.225])
@@ -401,10 +401,10 @@ def get_data_loaders(data_dir, batch_size, val_split=0.15, random_seed=42, num_w
         replacement=True
     )
 
-    # Wrap datasets with RandomCropDataset for 4 random 512x512 crops
-    print("\n[Random Crop Mode] Generating 4 random 512x512 crops per image")
-    train_dataset_cropped = RandomCropDataset(train_dataset, crop_size=512, num_crops=4)
-    val_dataset_cropped = RandomCropDataset(val_dataset, crop_size=512, num_crops=4)
+    # Wrap datasets with RandomCropDataset for 4 random 600x600 crops
+    print("\n[Random Crop Mode] Generating 4 random 600x600 crops per image")
+    train_dataset_cropped = RandomCropDataset(train_dataset, crop_size=600, num_crops=4)
+    val_dataset_cropped = RandomCropDataset(val_dataset, crop_size=600, num_crops=4)
 
     # Create data loaders
     # Disable persistent_workers to avoid semaphore leak
