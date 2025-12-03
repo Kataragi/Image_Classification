@@ -217,6 +217,7 @@ def load_model(checkpoint_path, device):
     # Get model configuration
     class_names = checkpoint.get('class_names', [])
     use_msa = checkpoint.get('use_msa', False)
+    resolution = checkpoint.get('resolution', 600)  # Default to 600 for backward compatibility
 
     # Create model
     model = EfficientNetWithMSA(
@@ -229,13 +230,13 @@ def load_model(checkpoint_path, device):
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    return model, class_names
+    return model, class_names, resolution
 
 
-def get_transform():
+def get_transform(resolution=600):
     """Get inference transform"""
     return transforms.Compose([
-        transforms.Resize((600, 600)),
+        transforms.Resize((resolution, resolution)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                            std=[0.229, 0.224, 0.225])
@@ -243,19 +244,17 @@ def get_transform():
 
 
 def predict_single_image(model, image_path, transform, class_names, device):
-    """Predict single image with 4 random crops"""
+    """Predict single image (full image mode)"""
     # Load and preprocess image
     image = Image.open(image_path).convert('RGB')
     input_tensor = transform(image)
 
-    # Generate 4 random crops
-    crops = generate_random_crops(input_tensor, crop_size=600, num_crops=4)
-    # Add batch dimension: (1, 4, C, H, W)
-    crops = crops.unsqueeze(0).to(device)
+    # Add batch dimension: (1, C, H, W)
+    input_tensor = input_tensor.unsqueeze(0).to(device)
 
     # Predict
     with torch.no_grad():
-        logits, coords = model(crops, return_features=True)
+        logits, coords = model(input_tensor, return_features=True)
         probs = F.softmax(logits, dim=1)
         confidence, predicted = torch.max(probs, 1)
 
@@ -295,9 +294,9 @@ def predict_folder(model, folder_path, transform, class_names, device):
     return results
 
 
-def build_style_space_reference(model, data_dir, class_names, device, output_path):
+def build_style_space_reference(model, data_dir, class_names, device, output_path, resolution=600):
     """Build style space reference from training data"""
-    transform = get_transform()
+    transform = get_transform(resolution)
 
     all_coords = []
     all_labels = []
@@ -321,12 +320,11 @@ def build_style_space_reference(model, data_dir, class_names, device, output_pat
                 image = Image.open(image_path).convert('RGB')
                 input_tensor = transform(image)
 
-                # Generate 4 random crops for consistency with training
-                crops = generate_random_crops(input_tensor, crop_size=600, num_crops=4)
-                crops = crops.unsqueeze(0).to(device)
+                # Add batch dimension for full image mode
+                input_tensor = input_tensor.unsqueeze(0).to(device)
 
                 with torch.no_grad():
-                    _, coords = model(crops, return_features=True)
+                    _, coords = model(input_tensor, return_features=True)
                     all_coords.append(coords[0])
                     all_labels.append(idx)
 
@@ -394,15 +392,16 @@ def main():
 
     # Load model
     print(f"\nLoading model from {args.checkpoint}")
-    model, class_names = load_model(args.checkpoint, device)
+    model, class_names, resolution = load_model(args.checkpoint, device)
     print(f"Model loaded. Classes: {', '.join(class_names)}")
+    print(f"Using resolution: {resolution}x{resolution}")
 
-    transform = get_transform()
+    transform = get_transform(resolution)
 
     # Build style space reference if requested
     if args.build_reference:
         visualizer = build_style_space_reference(
-            model, args.data_dir, class_names, device, args.reference
+            model, args.data_dir, class_names, device, args.reference, resolution
         )
 
         # Plot training data distribution
