@@ -24,7 +24,7 @@ import random
 from train import EfficientNetWithMSA
 
 
-def generate_random_crops(image_tensor, crop_size=512, num_crops=4):
+def generate_random_crops(image_tensor, crop_size=600, num_crops=4):
     """Generate random crops from an image tensor"""
     c, h, w = image_tensor.shape
 
@@ -235,7 +235,7 @@ def load_model(checkpoint_path, device):
 def get_transform():
     """Get inference transform"""
     return transforms.Compose([
-        transforms.Resize((512, 512)),
+        transforms.Resize((600, 600)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                            std=[0.229, 0.224, 0.225])
@@ -249,7 +249,7 @@ def predict_single_image(model, image_path, transform, class_names, device):
     input_tensor = transform(image)
 
     # Generate 4 random crops
-    crops = generate_random_crops(input_tensor, crop_size=512, num_crops=4)
+    crops = generate_random_crops(input_tensor, crop_size=600, num_crops=4)
     # Add batch dimension: (1, 4, C, H, W)
     crops = crops.unsqueeze(0).to(device)
 
@@ -322,7 +322,7 @@ def build_style_space_reference(model, data_dir, class_names, device, output_pat
                 input_tensor = transform(image)
 
                 # Generate 4 random crops for consistency with training
-                crops = generate_random_crops(input_tensor, crop_size=512, num_crops=4)
+                crops = generate_random_crops(input_tensor, crop_size=600, num_crops=4)
                 crops = crops.unsqueeze(0).to(device)
 
                 with torch.no_grad():
